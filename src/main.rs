@@ -1,13 +1,18 @@
+use std::time::{Duration, Instant};
+
+use camera::{Camera, CameraController, Projection};
 use cgmath::{InnerSpace, Matrix4, Point3, SquareMatrix, Vector3};
 use math::vec::Vec3;
-use wgpu::{util::DeviceExt, ShaderModule};
+use wgpu::{util::DeviceExt, Instance, ShaderModule};
 use winit::{
-    event::{ElementState, Event, KeyEvent, WindowEvent},
+    dpi::PhysicalSize,
+    event::{ElementState, Event, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::EventLoop,
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowBuilder},
 };
 
+mod camera;
 pub mod math;
 
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
@@ -58,6 +63,7 @@ pub async fn run() {
     let window = WindowBuilder::new().build(&event_loop).unwrap();
 
     let mut graphics_state = GraphicsState::new(window).await;
+    let mut previous_render_time = Instant::now();
 
     event_loop
         .run(move |event, target| match event {
@@ -76,23 +82,37 @@ pub async fn run() {
                             },
                         ..
                     } => target.exit(),
-                    WindowEvent::KeyboardInput { event, .. } => graphics_state.handle_input(event),
-                    // WindowEvent::KeyboardInput {
-                    //     event:
-                    //         KeyEvent {
-                    //             state: ElementState::Released,
-                    //             physical_key: PhysicalKey::Code(KeyCode::KeyO),
-                    //             ..
-                    //         },
-                    //     ..
-                    // } => graphics_state.toggle_wireframe(),
+                    WindowEvent::KeyboardInput {
+                        event:
+                            KeyEvent {
+                                physical_key: PhysicalKey::Code(key),
+                                state,
+                                ..
+                            },
+                        ..
+                    } => graphics_state.handle_key_input(key, state),
+                    WindowEvent::MouseInput { state, button, .. } => {
+                        if state.is_pressed() {
+                            graphics_state.mouse_pressed = true;
+                        }
+                    }
+                    WindowEvent::MouseWheel {
+                        delta: MouseScrollDelta::LineDelta(dx, dy),
+                        ..
+                    } => {
+                        graphics_state.handle_mouse_input(*dx, *dy);
+                    }
                     WindowEvent::Resized(size) => graphics_state.resize(*size),
                     // WindowEvent::ScaleFactorChanged {
                     //     inner_size_writer: size,
                     //     ..
                     // } => graphics_state.resize(*size),
                     WindowEvent::RedrawRequested => {
-                        graphics_state.update();
+                        let now = Instant::now();
+                        let dt = Instant::now() - previous_render_time;
+                        previous_render_time = now;
+
+                        graphics_state.update(dt);
                         match graphics_state.render() {
                             Ok(()) => {}
                             Err(wgpu::SurfaceError::Lost) => {
@@ -131,10 +151,14 @@ struct GraphicsState {
     index_count: u32,
 
     camera: Camera,
+    projection: Projection,
+
     camera_uniform: CameraUniform,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     camera_controller: CameraController,
+
+    mouse_pressed: bool,
 }
 
 impl GraphicsState {
@@ -150,6 +174,8 @@ impl GraphicsState {
         let adapter = instance
             .enumerate_adapters(wgpu::Backends::all())
             .filter(|adapter| {
+                println!("Found device: {}", adapter.get_info().name);
+
                 // Check if this adapter supports our surface
                 adapter.is_surface_supported(&surface)
             })
@@ -199,18 +225,13 @@ impl GraphicsState {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let camera = Camera {
-            eye: (0.0, 1.0, 2.0).into(),
-            target: (0.0, 0.0, 0.0).into(),
-            up: Vector3::unit_y(),
-            aspect: config.width as f32 / config.height as f32,
-            fovy: 45.0,
-            z_near: 0.1,
-            z_far: 100.0,
-        };
+        let camera = Camera::new((0.0, 5.0, 10.0), cgmath::Deg(-90.0), cgmath::Deg(-20.0));
+        let projection =
+            Projection::new(config.width, config.height, cgmath::Deg(45.0), 0.1, 100.0);
+        let camera_controller = CameraController::new(4.0, 0.4);
 
         let mut camera_uniform = CameraUniform::new();
-        camera_uniform.update(&camera);
+        camera_uniform.update(&camera, &projection);
 
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Buffer"),
@@ -241,8 +262,6 @@ impl GraphicsState {
                 resource: camera_buffer.as_entire_binding(),
             }],
         });
-
-        let camera_controller = CameraController::new(0.2);
 
         let shader = device.create_shader_module(wgpu::include_wgsl!("../shaders/triangle.wgsl"));
 
@@ -308,10 +327,14 @@ impl GraphicsState {
             index_count: INDICES.len() as u32,
 
             camera,
+            projection,
+
             camera_uniform,
             camera_buffer,
             camera_bind_group,
             camera_controller,
+
+            mouse_pressed: false,
         }
     }
 
@@ -328,18 +351,24 @@ impl GraphicsState {
         }
     }
 
-    fn handle_input(&mut self, event: &KeyEvent) {
-        self.camera_controller.handle_input(event);
+    fn handle_key_input(&mut self, key: &KeyCode, state: &ElementState) {
+        self.camera_controller.handle_key_input(key, state);
     }
 
-    fn update(&mut self) {
-        self.camera_controller.update(&mut self.camera);
-        self.camera_uniform.update(&self.camera);
+    fn handle_mouse_input(&mut self, dx: f32, dy: f32) {
+        self.camera_controller.handle_mouse_input(dx, dy);
+    }
+
+    fn update(&mut self, dt: Duration) {
+        self.camera_controller.update(&mut self.camera, dt);
+        self.camera_uniform.update(&self.camera, &self.projection);
         self.queue.write_buffer(
             &self.camera_buffer,
             0,
             bytemuck::cast_slice(&[self.camera_uniform]),
         );
+
+        println!("{:?}", self.camera.position);
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -459,136 +488,171 @@ const OPENGL_TO_WGPU_MATRIX: Matrix4<f32> = Matrix4::new(
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct CameraUniform {
+    view_position: [f32; 4],
     view_projection: [[f32; 4]; 4],
 }
 
 impl CameraUniform {
     fn new() -> Self {
         Self {
+            view_position: [0.0; 4],
             view_projection: Matrix4::identity().into(),
         }
     }
 
-    fn update(&mut self, camera: &Camera) {
-        self.view_projection = camera.view_projection().into();
+    fn update(&mut self, camera: &Camera, projection: &Projection) {
+        self.view_position = camera.position.to_homogeneous().into();
+        self.view_projection = (projection.matrix() * camera.matrix()).into();
     }
 }
 
-struct Camera {
-    eye: Point3<f32>,
-    target: Point3<f32>,
-    up: Vector3<f32>,
-    aspect: f32,
-    fovy: f32,
-    z_near: f32,
-    z_far: f32,
-}
+// struct Camera {
+//     eye: Point3<f32>,
+//     target: Point3<f32>,
+//     up: Vector3<f32>,
+//     aspect: f32,
+//     fovy: f32,
+//     z_near: f32,
+//     z_far: f32,
+// }
 
-impl Camera {
-    fn view_projection(&self) -> Matrix4<f32> {
-        let view = Matrix4::look_to_rh(
-            self.eye,
-            Vector3::new(self.target.x, self.target.y, self.target.z),
-            self.up,
-        );
-        let projection =
-            cgmath::perspective(cgmath::Deg(self.fovy), self.aspect, self.z_near, self.z_far);
+// impl Camera {
+//     fn view_projection(&self) -> Matrix4<f32> {
+//         let view = Matrix4::look_to_rh(
+//             self.eye,
+//             Vector3::new(self.target.x, self.target.y, self.target.z),
+//             self.up,
+//         );
+//         let projection =
+//             cgmath::perspective(cgmath::Deg(self.fovy), self.aspect, self.z_near, self.z_far);
 
-        view * projection * OPENGL_TO_WGPU_MATRIX
-    }
-}
+//         view * projection * OPENGL_TO_WGPU_MATRIX
+//     }
+// }
 
-struct CameraController {
-    speed: f32,
-    is_forward_pressed: bool,
-    is_backward_pressed: bool,
-    is_left_pressed: bool,
-    is_right_pressed: bool,
-}
+// struct CameraController {
+//     speed: f32,
+//     is_forward_pressed: bool,
+//     is_backward_pressed: bool,
+//     is_left_pressed: bool,
+//     is_right_pressed: bool,
+// }
 
-impl CameraController {
-    pub fn new(speed: f32) -> Self {
-        Self {
-            speed,
-            is_forward_pressed: false,
-            is_backward_pressed: false,
-            is_left_pressed: false,
-            is_right_pressed: false,
-        }
-    }
+// impl CameraController {
+//     pub fn new(speed: f32) -> Self {
+//         Self {
+//             speed,
+//             is_forward_pressed: false,
+//             is_backward_pressed: false,
+//             is_left_pressed: false,
+//             is_right_pressed: false,
+//         }
+//     }
 
-    pub fn handle_input(&mut self, event: &KeyEvent) {
-        match event {
-            KeyEvent {
-                state: ElementState::Pressed,
-                physical_key: PhysicalKey::Code(KeyCode::KeyW),
-                ..
-            } => self.is_forward_pressed = true,
+//     pub fn handle_input(&mut self, event: &KeyEvent) {
+//         match event {
+//             KeyEvent {
+//                 state: ElementState::Pressed,
+//                 physical_key: PhysicalKey::Code(KeyCode::KeyW),
+//                 ..
+//             } => {
+//                 println!("forward pressed");
 
-            KeyEvent {
-                state: ElementState::Pressed,
-                physical_key: PhysicalKey::Code(KeyCode::KeyS),
-                ..
-            } => self.is_forward_pressed = true,
-            KeyEvent {
-                state: ElementState::Pressed,
-                physical_key: PhysicalKey::Code(KeyCode::KeyA),
-                ..
-            } => self.is_forward_pressed = true,
-            KeyEvent {
-                state: ElementState::Pressed,
-                physical_key: PhysicalKey::Code(KeyCode::KeyD),
-                ..
-            } => self.is_forward_pressed = true,
-            KeyEvent {
-                state: ElementState::Released,
-                physical_key: PhysicalKey::Code(KeyCode::KeyW),
-                ..
-            } => self.is_forward_pressed = false,
-            KeyEvent {
-                state: ElementState::Released,
-                physical_key: PhysicalKey::Code(KeyCode::KeyS),
-                ..
-            } => self.is_backward_pressed = false,
-            KeyEvent {
-                state: ElementState::Released,
-                physical_key: PhysicalKey::Code(KeyCode::KeyA),
-                ..
-            } => self.is_left_pressed = false,
-            KeyEvent {
-                state: ElementState::Released,
-                physical_key: PhysicalKey::Code(KeyCode::KeyD),
-                ..
-            } => self.is_right_pressed = false,
-            _ => {}
-        }
-    }
+//                 self.is_forward_pressed = true;
+//             }
+//             KeyEvent {
+//                 state: ElementState::Pressed,
+//                 physical_key: PhysicalKey::Code(KeyCode::KeyS),
+//                 ..
+//             } => {
+//                 println!("backward pressed");
 
-    pub fn update(&self, camera: &mut Camera) {
-        let forward = camera.target - camera.eye;
-        let forward_normalized = forward.normalize();
-        let forward_magnitude = forward.magnitude();
+//                 self.is_backward_pressed = true
+//             }
+//             KeyEvent {
+//                 state: ElementState::Pressed,
+//                 physical_key: PhysicalKey::Code(KeyCode::KeyA),
+//                 ..
+//             } => {
+//                 println!("left pressed");
 
-        if self.is_forward_pressed && forward_magnitude > self.speed {
-            camera.eye += forward_normalized * self.speed;
-        }
+//                 self.is_forward_pressed = true
+//             }
+//             KeyEvent {
+//                 state: ElementState::Pressed,
+//                 physical_key: PhysicalKey::Code(KeyCode::KeyD),
+//                 ..
+//             } => {
+//                 println!("right pressed");
 
-        if self.is_backward_pressed {
-            camera.eye -= forward_normalized * self.speed;
-        }
+//                 self.is_right_pressed = true
+//             }
 
-        let right = forward_normalized.cross(camera.up);
-        let forward = camera.target - camera.eye;
-        let forward_magnitude = forward.magnitude();
+//             KeyEvent {
+//                 state: ElementState::Released,
+//                 physical_key: PhysicalKey::Code(KeyCode::KeyW),
+//                 ..
+//             } => {
+//                 println!("forward released");
 
-        if self.is_right_pressed {
-            camera.eye =
-                camera.target - (forward + right * self.speed).normalize() * forward_magnitude;
-        }
+//                 self.is_forward_pressed = false
+//             }
+//             KeyEvent {
+//                 state: ElementState::Released,
+//                 physical_key: PhysicalKey::Code(KeyCode::KeyS),
+//                 ..
+//             } => {
+//                 println!("backward released");
 
-        if self.is_left_pressed {
-            camera.eye =
-                camera.target - (forward - right * self.speed).normalize() * forward_magnitude;
-        }
-    }
-}
+//                 self.is_backward_pressed = false
+//             }
+//             KeyEvent {
+//                 state: ElementState::Released,
+//                 physical_key: PhysicalKey::Code(KeyCode::KeyA),
+//                 ..
+//             } => {
+//                 println!("left released");
+
+//                 self.is_left_pressed = false
+//             }
+//             KeyEvent {
+//                 state: ElementState::Released,
+//                 physical_key: PhysicalKey::Code(KeyCode::KeyD),
+//                 ..
+//             } => {
+//                 println!("right released");
+
+//                 self.is_right_pressed = false
+//             }
+//             _ => {}
+//         }
+//     }
+
+//     pub fn update(&self, camera: &mut Camera) {
+//         let forward = camera.target - camera.eye;
+//         let forward_normalized = forward.normalize();
+//         let forward_magnitude = forward.magnitude();
+
+//         if self.is_forward_pressed && forward_magnitude > self.speed {
+//             camera.eye += forward_normalized * self.speed;
+//         }
+
+//         if self.is_backward_pressed {
+//             camera.eye -= forward_normalized * self.speed;
+//         }
+
+//         let right = forward_normalized.cross(camera.up);
+//         let forward = camera.target - camera.eye;
+//         let forward_magnitude = forward.magnitude();
+
+//         if self.is_right_pressed {
+//             camera.eye =
+//                 camera.target - (forward + right * self.speed).normalize() * forward_magnitude;
+//         }
+
+//         if self.is_left_pressed {
+//             camera.eye =
+//                 camera.target - (forward - right * self.speed).normalize() * forward_magnitude;
+//         }
+//     }
+// }
