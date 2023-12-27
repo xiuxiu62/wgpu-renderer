@@ -3,10 +3,19 @@ name = "wgpu-renderer"
 version = "0.1.0"
 edition = "2021"
 
+[build]
+path = "build.rs"
+
 [dependencies]
 bytemuck = { version = "1.14.0", features = ["derive"] }
 cgmath = "0.18.0"
 image = "0.24.7"
 pollster = { version = "0.3.0", features = ["macro"] }
+tobj = { version = "4.0.0", features = ["async"] }
 wgpu = "0.18.0"
 winit = { version = "0.29.6", features = ["rwh_05"] }
+
+[build-dependencies]
+anyhow = "1.0.77"
+fs_extra = "1.3.0"
+glob = "0.3.1"

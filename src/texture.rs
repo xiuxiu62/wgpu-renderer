@@ -4,10 +4,11 @@ use wgpu::{
     SurfaceConfiguration, TextureDescriptor, TextureFormat, TextureUsages, TextureViewDescriptor,
 };
 
+#[derive(Debug)]
 pub struct Texture {
     handle: wgpu::Texture,
     pub view: wgpu::TextureView,
-    sampler: wgpu::Sampler,
+    pub sampler: wgpu::Sampler,
 }
 
 impl Texture {
