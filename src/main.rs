@@ -1,26 +1,32 @@
+mod camera;
+mod light;
+mod math;
+mod model;
+mod pipeline;
+mod texture;
+
 use bytemuck::{Pod, Zeroable};
 use camera::{Camera, CameraController, CameraUniform, Projection};
 use cgmath::{Deg, InnerSpace, Matrix4, Quaternion, Rotation3, Vector3, Zero};
+use light::{DrawLight, LightBundle, LightUniform};
 use math::vec::{Vec2, Vec3};
 use model::{DrawModel, Model, ModelVertex, VertexBufferFormat};
 use std::{
-    iter,
+    iter, mem,
     sync::OnceLock,
     time::{Duration, Instant},
 };
 use texture::Texture;
 use wgpu::{
+    include_wgsl,
     util::{BufferInitDescriptor, DeviceExt},
     vertex_attr_array, Backends, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout,
-    BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType, BlendComponent, BlendState,
-    Buffer, BufferBindingType, BufferUsages, ColorTargetState, ColorWrites,
-    CommandEncoderDescriptor, CompareFunction, DepthBiasState, Device, Face, Features,
-    FragmentState, FrontFace, Limits, LoadOp, MultisampleState, Operations, PipelineLayout,
-    PolygonMode, PrimitiveState, PrimitiveTopology, Queue, RenderPassColorAttachment,
-    RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline,
-    RenderPipelineDescriptor, ShaderModule, ShaderStages, StencilState, StoreOp, Surface,
-    SurfaceConfiguration, TextureFormat, TextureUsages, TextureViewDescriptor, VertexAttribute,
-    VertexBufferLayout, VertexState, VertexStepMode,
+    BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType,
+    BufferUsages, CommandEncoderDescriptor, Device, Features, Limits, LoadOp, Operations,
+    PipelineLayoutDescriptor, PrimitiveTopology, Queue, RenderPassColorAttachment,
+    RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline, ShaderModule,
+    ShaderStages, StoreOp, Surface, SurfaceConfiguration, TextureFormat, TextureUsages,
+    TextureViewDescriptor, VertexAttribute, VertexBufferLayout, VertexStepMode,
 };
 use winit::{
     dpi::PhysicalSize,
@@ -30,11 +36,6 @@ use winit::{
     window::{Window, WindowBuilder},
 };
 
-mod camera;
-mod math;
-mod model;
-mod texture;
-
 #[inline]
 fn supported_backends() -> &'static Backends {
     static BACKENDS: OnceLock<Backends> = OnceLock::new();
@@ -43,37 +44,12 @@ fn supported_backends() -> &'static Backends {
 }
 
 const INSTANCES_PER_ROW: u32 = 10;
-// const INSTANCE_DISPLACEMENT: Vector3<f32> = Vector3::new(
-//     INSTANCES_PER_ROW as f32 * 0.5,
-//     0.0,
-//     INSTANCES_PER_ROW as f32 * 0.5,
-// );
-
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     r: 0.1,
     g: 0.2,
     b: 0.3,
     a: 1.0,
 };
-
-// const INDICES: &[u16] = &[0, 1, 4, 1, 2, 4, 2, 3, 4, /* padding */ 0];
-// const VERTICES: &[Vertex] = &[
-//     vertex!([-0.0868241, 0.49240386, 0.0], [0.4131759, 0.99240386]), // A
-//     vertex!([-0.49513406, 0.06958647, 0.0], [0.0048659444, 0.56958647]), // B
-//     vertex!([-0.21918549, -0.44939706, 0.0], [0.28081453, 0.05060294]), // C
-//     vertex!([0.35966998, -0.3473291, 0.0], [0.85967, 0.1526709]),    // D
-//     vertex!([0.44147372, 0.2347359, 0.0], [0.9414737, 0.7347359]),   // E
-// ];
-
-#[macro_export]
-macro_rules! vertex {
-    ([$x:expr, $y:expr, $z:expr], [$xt:expr, $yt:expr]) => {
-        Vertex {
-            position: vec3!($x, $y, $z),
-            texture_coordinates: vec2!($xt, $yt),
-        }
-    };
-}
 
 #[pollster::main]
 async fn main() {
@@ -108,16 +84,15 @@ async fn main() {
                             },
                         ..
                     } => target.exit(),
-
-                    WindowEvent::KeyboardInput {
-                        event:
-                            KeyEvent {
-                                state: ElementState::Released,
-                                physical_key: PhysicalKey::Code(KeyCode::KeyP),
-                                ..
-                            },
-                        ..
-                    } => graphics_state.toggle_wirefame(),
+                    // WindowEvent::KeyboardInput {
+                    //     event:
+                    //         KeyEvent {
+                    //             state: ElementState::Released,
+                    //             physical_key: PhysicalKey::Code(KeyCode::KeyP),
+                    //             ..
+                    //         },
+                    //     ..
+                    // } => graphics_state.toggle_wirefame(),
                     WindowEvent::Resized(size) => graphics_state.resize(*size),
                     WindowEvent::RedrawRequested => {
                         let now = Instant::now();
@@ -153,10 +128,6 @@ struct GraphicsState {
 
     wireframe: bool,
 
-    render_pipeline: RenderPipeline,
-    render_pipeline_layout: PipelineLayout,
-    shader: ShaderModule,
-
     model: Model,
     instance_buffer: Buffer,
     instances: Vec<Instance>,
@@ -166,17 +137,20 @@ struct GraphicsState {
     camera: Camera,
     projection: Projection,
     camera_uniform: CameraUniform,
-    camera_buffer: wgpu::Buffer,
-    camera_bind_group: wgpu::BindGroup,
+    camera_buffer: Buffer,
+    camera_bind_group: BindGroup,
     camera_controller: CameraController,
+
+    light_bundle: LightBundle,
+    standard_render_pipeline: RenderPipeline,
+    light_render_pipeline: RenderPipeline,
+    // pipelines: Vec<Pipeline>,
     mouse_pressed: bool,
 }
 
 impl GraphicsState {
     async fn new(window: Window) -> Self {
         let (surface, size, device, queue, config) = Self::initialize_surface(&window).await;
-        // let (_texture_bind_group, texture_bind_group_layout) =
-        //     Self::intialize_texture(&device, &queue);
         let texture_bind_group_layout = Self::initialize_texture(&device);
         let (instance_buffer, instances) = Self::initialize_instances(&device);
         let (
@@ -193,68 +167,53 @@ impl GraphicsState {
             model::resource::load_model("cube.obj", &device, &queue, &texture_bind_group_layout)
                 .unwrap();
 
-        // let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        //     label: Some("Vertex Buffer"),
-        //     contents: bytemuck::cast_slice(VERTICES),
-        //     usage: wgpu::BufferUsages::VERTEX,
-        // });
-        // let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        //     label: Some("Index Buffer"),
-        //     contents: bytemuck::cast_slice(INDICES),
-        //     usage: wgpu::BufferUsages::INDEX,
-        // });
+        let light_bundle = LightUniform::new([2.0, 2.0, 2.0], [1.0, 1.0, 1.0]).prepared(&device);
 
-        let shader = device.create_shader_module(wgpu::include_wgsl!("../shaders/standard.wgsl"));
-        let render_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&texture_bind_group_layout, &camera_bind_group_layout],
+        let standard_render_pipeline = {
+            let shader =
+                device.create_shader_module(wgpu::include_wgsl!("../shaders/standard.wgsl"));
+
+            let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+                label: Some("Standard render pipeline layout"),
+                bind_group_layouts: &[
+                    &texture_bind_group_layout,
+                    &camera_bind_group_layout,
+                    &light_bundle.bind_group_layout,
+                ],
                 push_constant_ranges: &[],
             });
 
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Render Pipeline"),
-            layout: Some(&render_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: "vs_main",
-                buffers: &[ModelVertex::descriptor(), RawInstance::descriptor()],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: "fs_main",
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState {
-                        color: BlendComponent::REPLACE,
-                        alpha: BlendComponent::REPLACE,
-                    }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                polygon_mode: wgpu::PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: Texture::DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: CompareFunction::Less,
-                stencil: StencilState::default(),
-                bias: DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview: None,
-        });
+            Self::create_render_pipeline(
+                Some("Standard pipeline"),
+                &device,
+                &layout,
+                config.format,
+                Some(Texture::DEPTH_FORMAT),
+                &[model::ModelVertex::descriptor(), RawInstance::descriptor()],
+                &shader,
+                None,
+            )
+        };
+
+        let light_render_pipeline = {
+            let shader = device.create_shader_module(include_wgsl!("../shaders/light.wgsl"));
+            let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+                label: Some("Light pipeline layout"),
+                bind_group_layouts: &[&camera_bind_group_layout, &light_bundle.bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+            Self::create_render_pipeline(
+                Some("Lighting pipeline"),
+                &device,
+                &layout,
+                config.format,
+                Some(Texture::DEPTH_FORMAT),
+                &[ModelVertex::descriptor()],
+                &shader,
+                None,
+            )
+        };
 
         Self {
             surface,
@@ -265,10 +224,6 @@ impl GraphicsState {
             window,
 
             wireframe: false,
-
-            render_pipeline,
-            render_pipeline_layout,
-            shader,
 
             model,
             instance_buffer,
@@ -282,6 +237,12 @@ impl GraphicsState {
             camera_buffer,
             camera_bind_group,
             camera_controller,
+
+            light_bundle,
+
+            standard_render_pipeline,
+            light_render_pipeline,
+            // pipelines: vec![],
             mouse_pressed: false,
         }
     }
@@ -370,98 +331,9 @@ impl GraphicsState {
                     count: None,
                 },
             ],
-            label: Some("texture_bind_group_layout"),
+            label: Some("Texture bind group layout"),
         })
     }
-
-    // fn intialize_texture(device: &Device, queue: &Queue) -> (BindGroup, BindGroupLayout) {
-    //     // fn intialize_texture(device: &Device, queue: &Queue) -> BindGroupLayout {
-    //     let bytes = include_bytes!("../assets/happy-tree.png");
-    //     let image = image::load_from_memory(bytes).unwrap();
-    //     let rgba = image.to_rgba8();
-    //     let dimensions = image.dimensions();
-    //     let size = Extent3d {
-    //         width: dimensions.0,
-    //         height: dimensions.1,
-    //         depth_or_array_layers: 1,
-    //     };
-    //     let texture = device.create_texture(&TextureDescriptor {
-    //         label: Some("Diffuse Texture"),
-    //         size,
-    //         mip_level_count: 1,
-    //         sample_count: 1,
-    //         dimension: TextureDimension::D2,
-    //         format: TextureFormat::Rgba8UnormSrgb,
-    //         usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
-    //         view_formats: &[],
-    //     });
-
-    //     queue.write_texture(
-    //         ImageCopyTexture {
-    //             texture: &texture,
-    //             mip_level: 0,
-    //             origin: Origin3d::ZERO,
-    //             aspect: TextureAspect::All,
-    //         },
-    //         &rgba,
-    //         ImageDataLayout {
-    //             offset: 0,
-    //             bytes_per_row: Some(4 * dimensions.0),
-    //             rows_per_image: Some(dimensions.1),
-    //         },
-    //         size,
-    //     );
-
-    //     let view = texture.create_view(&TextureViewDescriptor::default());
-    //     let sampler = device.create_sampler(&SamplerDescriptor {
-    //         address_mode_u: AddressMode::ClampToEdge,
-    //         address_mode_v: AddressMode::ClampToEdge,
-    //         address_mode_w: AddressMode::ClampToEdge,
-    //         mag_filter: FilterMode::Linear,
-    //         min_filter: FilterMode::Nearest,
-    //         mipmap_filter: FilterMode::Nearest,
-    //         ..Default::default()
-    //     });
-
-    //     let bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-    //         label: Some("Texture bind group layout"),
-    //         entries: &[
-    //             BindGroupLayoutEntry {
-    //                 binding: 0,
-    //                 visibility: ShaderStages::FRAGMENT,
-    //                 ty: BindingType::Texture {
-    //                     sample_type: TextureSampleType::Float { filterable: true },
-    //                     view_dimension: TextureViewDimension::D2,
-    //                     multisampled: false,
-    //                 },
-    //                 count: None,
-    //             },
-    //             BindGroupLayoutEntry {
-    //                 binding: 1,
-    //                 visibility: ShaderStages::FRAGMENT,
-    //                 ty: BindingType::Sampler(SamplerBindingType::Filtering),
-    //                 count: None,
-    //             },
-    //         ],
-    //     });
-    //     let bind_group = device.create_bind_group(&BindGroupDescriptor {
-    //         label: Some("Texture bind group"),
-    //         layout: &bind_group_layout,
-    //         entries: &[
-    //             wgpu::BindGroupEntry {
-    //                 binding: 0,
-    //                 resource: BindingResource::TextureView(&view),
-    //             },
-    //             wgpu::BindGroupEntry {
-    //                 binding: 1,
-    //                 resource: BindingResource::Sampler(&sampler),
-    //             },
-    //         ],
-    //     });
-
-    //     (bind_group, bind_group_layout)
-    //     // bind_group_layout
-    // }
 
     fn initialize_instances(device: &Device) -> (Buffer, Vec<Instance>) {
         const SPACE_BETWEEN: f32 = 3.0;
@@ -514,20 +386,24 @@ impl GraphicsState {
 
         let camera_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("Camera Buffer"),
-            contents: bytemuck::cast_slice(&[camera_uniform]),
+            contents: bytemuck::bytes_of(&camera_uniform),
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
 
+        // SAFETY: size_of::<CameraUniform> will never be zero and if a uniform size is zero it shouldn't exist in the first place
         let camera_bind_group_layout =
             device.create_bind_group_layout(&BindGroupLayoutDescriptor {
                 label: Some("Camera bind group layout"),
                 entries: &[BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: ShaderStages::VERTEX,
+                    visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size: None,
+                        // min_binding_size: Some(unsafe {
+                        //     mem::transmute(mem::size_of::<CameraUniform>())
+                        // }),
                     },
                     count: None,
                 }],
@@ -551,6 +427,61 @@ impl GraphicsState {
             camera_bind_group_layout,
             camera_bind_group,
         )
+    }
+
+    fn create_render_pipeline(
+        label: Option<&str>,
+        device: &wgpu::Device,
+        layout: &wgpu::PipelineLayout,
+        color_format: wgpu::TextureFormat,
+        depth_format: Option<wgpu::TextureFormat>,
+        vertex_layouts: &[wgpu::VertexBufferLayout],
+        shader: &ShaderModule,
+        topology: Option<PrimitiveTopology>,
+    ) -> wgpu::RenderPipeline {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label,
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs_main",
+                buffers: vertex_layouts,
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState {
+                        alpha: wgpu::BlendComponent::REPLACE,
+                        color: wgpu::BlendComponent::REPLACE,
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: topology.unwrap_or(PrimitiveTopology::TriangleList),
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
+                format,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+        })
     }
 
     pub fn window(&self) -> &Window {
@@ -596,8 +527,9 @@ impl GraphicsState {
         self.queue.write_buffer(
             &self.camera_buffer,
             0,
-            bytemuck::cast_slice(&[self.camera_uniform]),
+            bytemuck::bytes_of(&self.camera_uniform),
         );
+        self.light_bundle.update(&self.queue);
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -635,12 +567,21 @@ impl GraphicsState {
             });
 
             render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-            render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_pipeline(&self.light_render_pipeline);
+            render_pass.draw_light_model(
+                &self.model,
+                &self.camera_bind_group,
+                &self.light_bundle.bind_group,
+            );
+
+            // FIXME: the bind group issue unwind starts here
+            render_pass.set_pipeline(&self.standard_render_pipeline);
             render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
             render_pass.draw_model_instanced(
                 &self.model,
                 0..self.instances.len() as u32,
                 &self.camera_bind_group,
+                &self.light_bundle.bind_group,
             );
         }
 
@@ -650,59 +591,59 @@ impl GraphicsState {
         Ok(())
     }
 
-    fn toggle_wirefame(&mut self) {
-        self.wireframe = !self.wireframe;
-        let topology = match self.wireframe {
-            true => PrimitiveTopology::LineList,
-            false => PrimitiveTopology::TriangleList,
-        };
+    // fn toggle_wirefame(&mut self) {
+    //     self.wireframe = !self.wireframe;
+    //     let topology = match self.wireframe {
+    //         true => PrimitiveTopology::LineList,
+    //         false => PrimitiveTopology::TriangleList,
+    //     };
 
-        let vertex = VertexState {
-            module: &self.shader,
-            entry_point: "vs_main",
-            buffers: &[ModelVertex::descriptor(), RawInstance::descriptor()],
-        };
+    //     let vertex = VertexState {
+    //         module: &self.shader,
+    //         entry_point: "vs_main",
+    //         buffers: &[ModelVertex::descriptor(), RawInstance::descriptor()],
+    //     };
 
-        let fragment_targets = [Some(ColorTargetState {
-            format: self.config.format,
-            blend: Some(BlendState::REPLACE),
-            write_mask: ColorWrites::ALL,
-        })];
-        let fragment = Some(FragmentState {
-            module: &self.shader,
-            entry_point: "fs_main",
-            targets: &fragment_targets,
-        });
+    //     let fragment_targets = [Some(ColorTargetState {
+    //         format: self.config.format,
+    //         blend: Some(BlendState::REPLACE),
+    //         write_mask: ColorWrites::ALL,
+    //     })];
+    //     let fragment = Some(FragmentState {
+    //         module: &self.shader,
+    //         entry_point: "fs_main",
+    //         targets: &fragment_targets,
+    //     });
 
-        let primitive = PrimitiveState {
-            topology,
-            strip_index_format: None,
-            front_face: FrontFace::Ccw,
-            cull_mode: Some(Face::Back),
-            unclipped_depth: false,
-            polygon_mode: PolygonMode::Fill,
-            conservative: false,
-        };
+    //     let primitive = PrimitiveState {
+    //         topology,
+    //         strip_index_format: None,
+    //         front_face: FrontFace::Ccw,
+    //         cull_mode: Some(Face::Back),
+    //         unclipped_depth: false,
+    //         polygon_mode: PolygonMode::Fill,
+    //         conservative: false,
+    //     };
 
-        let multisample = MultisampleState {
-            count: 1,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        };
+    //     let multisample = MultisampleState {
+    //         count: 1,
+    //         mask: !0,
+    //         alpha_to_coverage_enabled: false,
+    //     };
 
-        self.render_pipeline = self
-            .device
-            .create_render_pipeline(&RenderPipelineDescriptor {
-                label: Some("Render pipeline"),
-                layout: Some(&self.render_pipeline_layout),
-                vertex,
-                fragment,
-                primitive,
-                depth_stencil: None,
-                multisample,
-                multiview: None,
-            });
-    }
+    //     self.render_pipeline = self
+    //         .device
+    //         .create_render_pipeline(&RenderPipelineDescriptor {
+    //             label: Some("Render pipeline"),
+    //             layout: Some(&self.render_pipeline_layout),
+    //             vertex,
+    //             fragment,
+    //             primitive,
+    //             depth_stencil: None,
+    //             multisample,
+    //             multiview: None,
+    //         });
+    // }
 }
 
 #[repr(C)]
@@ -745,6 +686,7 @@ impl Instance {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct RawInstance {
     model: [[f32; 4]; 4],
+    // normal: [[f32; 3]; 3],
 }
 
 impl VertexBufferFormat for RawInstance {

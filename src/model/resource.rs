@@ -107,6 +107,7 @@ pub fn load_model(
                 contents: bytemuck::cast_slice(&vertices),
                 usage: BufferUsages::VERTEX,
             });
+
             let index_buffer = device.create_buffer_init(&BufferInitDescriptor {
                 label: Some("Index buffer ({name})"),
                 contents: bytemuck::cast_slice(&model.mesh.indices),

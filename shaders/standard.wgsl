@@ -1,15 +1,12 @@
-@group(0) @binding(0)
-var texture_diffuse: texture_2d<f32>;
-@group(0) @binding(1)
-var sampler_diffuse: sampler;
-
 struct Camera {
     view_position: vec4<f32>,
     view_projection: mat4x4<f32>,
 }
 
-@group(1) @binding(0) 
-var<uniform> camera: Camera;
+struct Light {
+    position: vec3<f32>,
+    color: vec3<f32>,
+}
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -27,6 +24,18 @@ struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) texture_coordinates: vec2<f32>,
 }
+
+@group(0) @binding(0)
+var texture_diffuse: texture_2d<f32>;
+
+@group(0) @binding(1)
+var sampler_diffuse: sampler;
+
+@group(1) @binding(0) 
+var<uniform> camera: Camera;
+
+@group(2) @binding(0)
+var<uniform> light: Light;
 
 @vertex
 fn vs_main(
@@ -49,5 +58,9 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return textureSample(texture_diffuse, sampler_diffuse, in.texture_coordinates);
+    let object_color: vec4<f32> = textureSample(texture_diffuse, sampler_diffuse, in.texture_coordinates); 
+    let ambient_strength = 0.1;
+    let ambient_color = light.color * ambient_strength;
+    
+    return vec4<f32>(object_color.xyz * ambient_color, object_color.a);
 }
