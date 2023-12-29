@@ -13,7 +13,7 @@ use math::vec::{Vec2, Vec3};
 use model::{DrawModel, Model, ModelVertex, VertexBufferFormat};
 use std::{
     iter, mem,
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 use texture::Texture;
@@ -31,7 +31,7 @@ use wgpu::{
 use winit::{
     dpi::PhysicalSize,
     event::{DeviceEvent, ElementState, Event, KeyEvent, MouseButton, WindowEvent},
-    event_loop::EventLoop,
+    event_loop::{ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowBuilder},
 };
@@ -58,62 +58,77 @@ async fn main() {
 
     let mut graphics_state = GraphicsState::new(window).await;
     let mut previous_render_time = Instant::now();
+    let target_frame_rate = 60;
+    let frame_time = Duration::from_millis(1000) / target_frame_rate as u32;
 
     event_loop
-        .run(move |event, target| match event {
-            Event::DeviceEvent {
-                event: DeviceEvent::MouseMotion { delta: (dx, dy) },
-                ..
-            } if graphics_state.mouse_pressed => {
-                graphics_state.camera_controller.handle_mouse(dx, dy)
-            }
-            Event::WindowEvent {
-                ref event,
-                window_id,
-            } if window_id == graphics_state.window().id()
-                && !graphics_state.handle_input(event) =>
-            {
-                match event {
-                    WindowEvent::CloseRequested
-                    | WindowEvent::KeyboardInput {
-                        event:
-                            KeyEvent {
-                                state: ElementState::Pressed,
-                                physical_key: PhysicalKey::Code(KeyCode::Escape),
-                                ..
-                            },
-                        ..
-                    } => target.exit(),
-                    // WindowEvent::KeyboardInput {
-                    //     event:
-                    //         KeyEvent {
-                    //             state: ElementState::Released,
-                    //             physical_key: PhysicalKey::Code(KeyCode::KeyP),
-                    //             ..
-                    //         },
-                    //     ..
-                    // } => graphics_state.toggle_wirefame(),
-                    WindowEvent::Resized(size) => graphics_state.resize(*size),
-                    WindowEvent::RedrawRequested => {
-                        let now = Instant::now();
-                        let dt = Instant::now() - previous_render_time;
-                        previous_render_time = now;
-                        graphics_state.update(dt);
+        .run(move |event, target| {
+            target.set_control_flow(ControlFlow::Poll);
 
-                        match graphics_state.render() {
-                            Ok(()) => {}
-                            Err(wgpu::SurfaceError::Lost) => {
-                                graphics_state.resize(graphics_state.size)
-                            }
-                            Err(wgpu::SurfaceError::OutOfMemory) => target.exit(),
-                            Err(error) => eprintln!("{error:?}"),
-                        }
-                    }
-                    _ => {}
+            match event {
+                Event::Suspended => target.exit(),
+                Event::DeviceEvent {
+                    event: DeviceEvent::MouseMotion { delta: (dx, dy) },
+                    ..
+                } if graphics_state.mouse_pressed => {
+                    graphics_state.camera_controller.handle_mouse(dx, dy);
                 }
-            }
+                Event::WindowEvent {
+                    ref event,
+                    window_id,
+                } if window_id == graphics_state.window().id()
+                    && !graphics_state.handle_input(event) =>
+                {
+                    match event {
+                        WindowEvent::CloseRequested
+                        | WindowEvent::KeyboardInput {
+                            event:
+                                KeyEvent {
+                                    state: ElementState::Pressed,
+                                    physical_key: PhysicalKey::Code(KeyCode::Escape),
+                                    ..
+                                },
+                            ..
+                        } => target.exit(),
+                        // WindowEvent::KeyboardInput {
+                        //     event:
+                        //         KeyEvent {
+                        //             state: ElementState::Released,
+                        //             physical_key: PhysicalKey::Code(KeyCode::KeyP),
+                        //             ..
+                        //         },
+                        //     ..
+                        // } => graphics_state.toggle_wirefame(),
+                        WindowEvent::Resized(size) => graphics_state.resize(*size),
+                        WindowEvent::RedrawRequested => {
+                            let now = Instant::now();
+                            let dt = Instant::now() - previous_render_time;
+                            previous_render_time = now;
+                            graphics_state.update(dt);
 
-            _ => {}
+                            match graphics_state.render() {
+                                Ok(()) => {}
+                                Err(wgpu::SurfaceError::Lost) => {
+                                    println!("Error: Surface Lost");
+                                    graphics_state.resize(graphics_state.size)
+                                }
+                                Err(wgpu::SurfaceError::OutOfMemory) => target.exit(),
+                                Err(error) => eprintln!("{error:?}"),
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                _ => {}
+            };
+
+            let now = Instant::now();
+            let dt = now - previous_render_time;
+
+            if dt >= frame_time {
+                graphics_state.window.request_redraw();
+            }
         })
         .unwrap();
 }
