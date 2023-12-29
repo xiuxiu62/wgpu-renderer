@@ -2,8 +2,8 @@ use crate::Texture;
 use bytemuck::{Pod, Zeroable};
 use std::ops::Range;
 use wgpu::{
-    vertex_attr_array, BindGroup, Buffer, BufferAddress, RenderPass, VertexBufferLayout,
-    VertexStepMode,
+    vertex_attr_array, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout,
+    BindingResource, Buffer, BufferAddress, Device, RenderPass, VertexBufferLayout, VertexStepMode,
 };
 
 pub mod resource;
@@ -25,7 +25,48 @@ pub struct Model {
 pub struct Material {
     pub name: String,
     pub diffuse_texture: Texture,
+    pub normal_texture: Texture,
     pub bind_group: BindGroup,
+}
+
+impl Material {
+    pub fn new(
+        device: &Device,
+        name: &str,
+        diffuse_texture: Texture,
+        normal_texture: Texture,
+        layout: &BindGroupLayout,
+    ) -> Self {
+        let bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some(&format!("Texture bind group ({name})")),
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(&diffuse_texture.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&normal_texture.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&normal_texture.sampler),
+                },
+            ],
+            layout,
+        });
+
+        Self {
+            name: name.to_owned(),
+            diffuse_texture,
+            normal_texture,
+            bind_group,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -43,14 +84,19 @@ pub struct ModelVertex {
     pub position: [f32; 3],
     pub texture_coordinates: [f32; 2],
     pub normal: [f32; 3],
+
+    pub tangent: [f32; 3],
+    pub bitangent: [f32; 3],
 }
 
 impl VertexBufferFormat for ModelVertex {
-    type Attributes = [wgpu::VertexAttribute; 3];
+    type Attributes = [wgpu::VertexAttribute; 5];
     const ATTRIBUTES: Self::Attributes = vertex_attr_array![
         0 => Float32x3,
         1 => Float32x2,
         2 => Float32x3,
+        3 => Float32x3,
+        4 => Float32x3,
     ];
 
     fn descriptor() -> VertexBufferLayout<'static> {
@@ -98,6 +144,15 @@ pub trait DrawModel<'a> {
         camera_bind_group: &'a BindGroup,
         light_bind_group: &'a BindGroup,
     );
+
+    fn draw_model_instanced_with_material(
+        &mut self,
+        model: &'a Model,
+        material: &'a Material,
+        instances: Range<u32>,
+        camera_bind_group: &'a BindGroup,
+        light_bind_group: &'a BindGroup,
+    );
 }
 
 impl<'a> DrawModel<'a> for RenderPass<'a> {
@@ -133,6 +188,25 @@ impl<'a> DrawModel<'a> for RenderPass<'a> {
                 camera_bind_group,
                 light_bind_group,
             );
+        });
+    }
+
+    fn draw_model_instanced_with_material(
+        &mut self,
+        model: &'a Model,
+        material: &'a Material,
+        instances: Range<u32>,
+        camera_bind_group: &'a BindGroup,
+        light_bind_group: &'a BindGroup,
+    ) {
+        model.meshes.iter().for_each(move |mesh| {
+            self.draw_mesh_instanced(
+                mesh,
+                material,
+                instances.clone(),
+                camera_bind_group,
+                light_bind_group,
+            )
         });
     }
 }

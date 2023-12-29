@@ -1,19 +1,12 @@
-mod camera;
-mod light;
-mod math;
-mod model;
-mod pipeline;
-mod texture;
-
 use bytemuck::{Pod, Zeroable};
 use camera::{Camera, CameraController, CameraUniform, Projection};
-use cgmath::{Deg, InnerSpace, Matrix4, Quaternion, Rotation3, Vector3, Zero};
+use cgmath::{Deg, InnerSpace, Matrix3, Matrix4, Quaternion, Rotation3, Vector3, Zero};
 use light::{DrawLight, LightBundle, LightUniform};
 use math::vec::{Vec2, Vec3};
 use model::{DrawModel, Model, ModelVertex, VertexBufferFormat};
 use std::{
-    iter, mem,
-    sync::{Arc, OnceLock},
+    iter,
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 use texture::Texture;
@@ -24,9 +17,10 @@ use wgpu::{
     BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType,
     BufferUsages, CommandEncoderDescriptor, Device, Features, Limits, LoadOp, Operations,
     PipelineLayoutDescriptor, PrimitiveTopology, Queue, RenderPassColorAttachment,
-    RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline, ShaderModule,
-    ShaderStages, StoreOp, Surface, SurfaceConfiguration, TextureFormat, TextureUsages,
-    TextureViewDescriptor, VertexAttribute, VertexBufferLayout, VertexStepMode,
+    RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline, SamplerBindingType,
+    ShaderModule, ShaderStages, StoreOp, Surface, SurfaceConfiguration, TextureFormat,
+    TextureSampleType, TextureUsages, TextureViewDescriptor, TextureViewDimension, VertexAttribute,
+    VertexBufferLayout, VertexStepMode,
 };
 use winit::{
     dpi::PhysicalSize,
@@ -36,6 +30,13 @@ use winit::{
     window::{Window, WindowBuilder},
 };
 
+mod camera;
+mod light;
+mod math;
+mod model;
+mod pipeline;
+mod texture;
+
 #[inline]
 fn supported_backends() -> &'static Backends {
     static BACKENDS: OnceLock<Backends> = OnceLock::new();
@@ -43,6 +44,7 @@ fn supported_backends() -> &'static Backends {
     BACKENDS.get_or_init(|| Backends::VULKAN | Backends::DX12 | Backends::METAL)
 }
 
+// const INSTANCES_PER_ROW: u32 = 1;
 const INSTANCES_PER_ROW: u32 = 10;
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     r: 0.1,
@@ -58,7 +60,7 @@ async fn main() {
 
     let mut graphics_state = GraphicsState::new(window).await;
     let mut previous_render_time = Instant::now();
-    let target_frame_rate = 60;
+    let target_frame_rate = 120;
     let frame_time = Duration::from_millis(1000) / target_frame_rate as u32;
 
     event_loop
@@ -329,20 +331,36 @@ impl GraphicsState {
     fn initialize_texture(device: &Device) -> BindGroupLayout {
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             entries: &[
-                wgpu::BindGroupLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: TextureViewDimension::D2,
+                        sample_type: TextureSampleType::Float { filterable: true },
                     },
                     count: None,
                 },
-                wgpu::BindGroupLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Sampler(SamplerBindingType::Filtering),
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Texture {
+                        sample_type: TextureSampleType::Float { filterable: true },
+                        view_dimension: TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Sampler(SamplerBindingType::Filtering),
                     count: None,
                 },
             ],
@@ -359,6 +377,11 @@ impl GraphicsState {
                     let x = SPACE_BETWEEN * (x as f32 - INSTANCES_PER_ROW as f32 / 2.0);
                     let z = SPACE_BETWEEN * (z as f32 - INSTANCES_PER_ROW as f32 / 2.0);
 
+                    // Single centered model
+                    // let position = Vector3::new(0.0, 0.0, 0.0);
+                    // let rotation = Quaternion::from_axis_angle((0.0, 1.0, 0.0).into(), Deg(180.0));
+
+                    // Many dispersed models
                     let position = Vector3::new(x, 0.0, z);
                     let rotation = if position.is_zero() {
                         Quaternion::from_axis_angle(Vector3::unit_z(), Deg(0.0))
@@ -589,7 +612,6 @@ impl GraphicsState {
                 &self.light_bundle.bind_group,
             );
 
-            // FIXME: the bind group issue unwind starts here
             render_pass.set_pipeline(&self.standard_render_pipeline);
             render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
             render_pass.draw_model_instanced(
@@ -693,6 +715,7 @@ impl Instance {
     fn raw(&self) -> RawInstance {
         RawInstance {
             model: (Matrix4::from_translation(self.position) * Matrix4::from(self.rotation)).into(),
+            normal: Matrix3::from(self.rotation).into(),
         }
     }
 }
@@ -701,16 +724,19 @@ impl Instance {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct RawInstance {
     model: [[f32; 4]; 4],
-    // normal: [[f32; 3]; 3],
+    normal: [[f32; 3]; 3],
 }
 
 impl VertexBufferFormat for RawInstance {
-    type Attributes = [VertexAttribute; 4];
+    type Attributes = [VertexAttribute; 7];
     const ATTRIBUTES: Self::Attributes = vertex_attr_array![
         5 => Float32x4,
         6 => Float32x4,
         7 => Float32x4,
         8 => Float32x4,
+        9 => Float32x3,
+        10 => Float32x3,
+        11 => Float32x3,
     ];
 
     fn descriptor() -> wgpu::VertexBufferLayout<'static> {
