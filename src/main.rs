@@ -63,6 +63,8 @@ async fn main() {
     let target_frame_rate = 120;
     let frame_time = Duration::from_millis(1000) / target_frame_rate as u32;
 
+    graphics_state.text_manager.update("ahoy sailor");
+
     event_loop
         .run(move |event, target| {
             target.set_control_flow(ControlFlow::Poll);
@@ -161,6 +163,9 @@ struct GraphicsState {
     light_bundle: LightBundle,
     standard_render_pipeline: RenderPipeline,
     light_render_pipeline: RenderPipeline,
+
+    text_manager: ui::TextManager,
+
     // pipelines: Vec<Pipeline>,
     mouse_pressed: bool,
 }
@@ -232,6 +237,8 @@ impl GraphicsState {
             )
         };
 
+        let text_manager = ui::TextManager::new(&device, &queue, &config);
+
         Self {
             surface,
             device,
@@ -256,6 +263,8 @@ impl GraphicsState {
             camera_controller,
 
             light_bundle,
+
+            text_manager,
 
             standard_render_pipeline,
             light_render_pipeline,
@@ -533,6 +542,7 @@ impl GraphicsState {
             self.config.height = size.height;
             self.surface.configure(&self.device, &self.config);
             self.depth_texture = Texture::create_depth_texture(&self.device, &self.config);
+            self.text_manager.resize(&self.config);
         }
     }
 
@@ -568,13 +578,12 @@ impl GraphicsState {
             bytemuck::bytes_of(&self.camera_uniform),
         );
         self.light_bundle.update(&self.queue);
+        self.text_manager.resize(&self.config);
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        let output = self.surface.get_current_texture()?;
-        let view = output
-            .texture
-            .create_view(&TextureViewDescriptor::default());
+        let frame = self.surface.get_current_texture()?;
+        let view = frame.texture.create_view(&TextureViewDescriptor::default());
         let mut encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor {
@@ -622,8 +631,11 @@ impl GraphicsState {
             );
         }
 
+        self.text_manager
+            .render(&self.device, &self.queue, &self.config, &mut encoder, &view);
+
         self.queue.submit(iter::once(encoder.finish()));
-        output.present();
+        frame.present();
 
         Ok(())
     }
@@ -744,6 +756,136 @@ impl VertexBufferFormat for RawInstance {
             array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
             step_mode: VertexStepMode::Instance,
             attributes: &Self::ATTRIBUTES,
+        }
+    }
+}
+
+mod ui {
+    use std::iter;
+
+    use glyphon::{
+        Attrs, Buffer, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache,
+        TextArea, TextAtlas, TextBounds, TextRenderer,
+    };
+    use wgpu::{
+        CommandEncoder, CommandEncoderDescriptor, Device, LoadOp, MultisampleState, Operations,
+        Queue, RenderPass, RenderPassColorAttachment, RenderPassDepthStencilAttachment,
+        RenderPassDescriptor, StoreOp, Surface, SurfaceConfiguration, TextureView,
+        TextureViewDescriptor,
+    };
+
+    pub struct TextManager {
+        font_system: FontSystem,
+        cache: SwashCache,
+        pub atlas: TextAtlas,
+        pub renderer: TextRenderer,
+        buffer: Buffer,
+    }
+
+    impl TextManager {
+        const DEFAULT_FONT: &'static [u8] = include_bytes!("../res/Inter-Bold.ttf");
+        const SCALE: f32 = 0.5;
+
+        pub fn new(device: &Device, queue: &Queue, config: &SurfaceConfiguration) -> Self {
+            let mut font_system = FontSystem::new();
+            let cache = SwashCache::new();
+            let mut atlas = TextAtlas::new(device, queue, config.format);
+            let renderer = TextRenderer::new(&mut atlas, device, MultisampleState::default(), None);
+            let mut buffer = Buffer::new(&mut font_system, Metrics::new(30.0, 42.0));
+
+            let width = config.width as f32 * Self::SCALE;
+            let height = config.height as f32 * Self::SCALE;
+
+            buffer.set_size(&mut font_system, width, height);
+            buffer.set_text(
+                &mut font_system,
+                "ahoy there",
+                Attrs::new().family(Family::SansSerif),
+                Shaping::Advanced,
+            );
+            buffer.shape_until_scroll(&mut font_system);
+
+            Self {
+                font_system,
+                cache,
+                atlas,
+                renderer,
+                buffer,
+            }
+        }
+
+        pub fn update(&mut self, message: &str) {
+            self.buffer.set_text(
+                &mut self.font_system,
+                message,
+                Attrs::new().family(Family::SansSerif),
+                Shaping::Advanced,
+            );
+        }
+
+        pub fn resize(&mut self, config: &SurfaceConfiguration) {
+            self.buffer.set_size(
+                &mut self.font_system,
+                config.width as f32 * Self::SCALE,
+                config.height as f32 * Self::SCALE,
+            );
+        }
+
+        pub fn render(
+            &mut self,
+            device: &Device,
+            queue: &Queue,
+            config: &SurfaceConfiguration,
+            encoder: &mut CommandEncoder,
+            view: &TextureView,
+        ) {
+            self.renderer
+                .prepare(
+                    device,
+                    queue,
+                    &mut self.font_system,
+                    &mut self.atlas,
+                    Resolution {
+                        width: config.width,
+                        height: config.height,
+                    },
+                    [TextArea {
+                        buffer: &self.buffer,
+                        left: 10.0,
+                        top: 10.0,
+                        scale: 1.0,
+                        bounds: TextBounds {
+                            left: 0,
+                            top: 0,
+                            right: 600,
+                            bottom: 160,
+                        },
+                        default_color: Color::rgb(255, 255, 255),
+                    }],
+                    &mut self.cache,
+                )
+                .unwrap();
+
+            {
+                let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[Some(RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: Operations {
+                            load: LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+
+                self.renderer.render(&self.atlas, &mut pass).unwrap();
+            }
+
+            self.atlas.trim();
         }
     }
 }
