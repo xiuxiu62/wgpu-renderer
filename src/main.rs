@@ -1,8 +1,8 @@
 use bytemuck::{Pod, Zeroable};
 use camera::{Camera, CameraController, CameraUniform, Projection};
-use cgmath::{Deg, InnerSpace, Matrix3, Matrix4, Quaternion, Rotation3, Vector3, Zero};
+use cgmath::{Deg, InnerSpace, Matrix3, Matrix4, Quaternion, Rotation3, Vector2, Vector3, Zero};
 use light::{DrawLight, LightBundle, LightUniform};
-use math::vec::{Vec2, Vec3};
+// use math::vec::{Vec2, Vec3};
 use model::{DrawModel, Model, ModelVertex, VertexBufferFormat};
 use std::{
     iter,
@@ -32,7 +32,7 @@ use winit::{
 
 mod camera;
 mod light;
-mod math;
+// mod math;
 mod model;
 mod pipeline;
 mod texture;
@@ -189,7 +189,8 @@ impl GraphicsState {
             model::resource::load_model("cube.obj", &device, &queue, &texture_bind_group_layout)
                 .unwrap();
 
-        let light_bundle = LightUniform::new([2.0, 2.0, 2.0], [1.0, 1.0, 1.0]).prepared(&device);
+        let light_bundle =
+            LightUniform::new(vec3!(2.0, 2.0, 2.0), vec3!(1.0, 1.0, 1.0)).prepared(&device);
 
         let standard_render_pipeline = {
             let shader =
@@ -425,10 +426,13 @@ impl GraphicsState {
         BindGroupLayout,
         BindGroup,
     ) {
+        let speed = 8.0;
+        let sensitivity = 1.0;
+
         let camera = Camera::new((0.0, 5.0, 10.0), cgmath::Deg(-90.0), cgmath::Deg(-20.0));
         let projection =
             Projection::new(config.width, config.height, cgmath::Deg(45.0), 0.1, 100.0);
-        let camera_controller = CameraController::new(4.0, 0.4);
+        let camera_controller = CameraController::new(speed, sensitivity);
         let camera_uniform = CameraUniform::new(&camera, &projection);
 
         let camera_buffer = device.create_buffer_init(&BufferInitDescriptor {
@@ -437,7 +441,6 @@ impl GraphicsState {
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
 
-        // SAFETY: size_of::<CameraUniform> will never be zero and if a uniform size is zero it shouldn't exist in the first place
         let camera_bind_group_layout =
             device.create_bind_group_layout(&BindGroupLayoutDescriptor {
                 label: Some("Camera bind group layout"),
@@ -448,9 +451,6 @@ impl GraphicsState {
                         ty: BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size: None,
-                        // min_binding_size: Some(unsafe {
-                        //     mem::transmute(mem::size_of::<CameraUniform>())
-                        // }),
                     },
                     count: None,
                 }],
@@ -698,8 +698,8 @@ impl GraphicsState {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct PrimitiveVertex {
-    position: Vec3,
-    texture_coordinates: Vec2,
+    position: Vector3<f32>,
+    texture_coordinates: Vector2<f32>,
 }
 
 impl VertexBufferFormat for PrimitiveVertex {
@@ -735,8 +735,8 @@ impl Instance {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct RawInstance {
-    model: [[f32; 4]; 4],
-    normal: [[f32; 3]; 3],
+    model: Matrix4<f32>,
+    normal: Matrix3<f32>,
 }
 
 impl VertexBufferFormat for RawInstance {
@@ -889,3 +889,5 @@ mod ui {
         }
     }
 }
+
+mod util;

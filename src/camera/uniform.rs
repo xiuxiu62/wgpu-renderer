@@ -1,11 +1,12 @@
 use super::{Camera, Projection};
-use cgmath::{Matrix4, SquareMatrix};
+use crate::vec4;
+use cgmath::{Matrix4, SquareMatrix, Vector3, Vector4};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
-    view_position: [f32; 4],
-    view_projection: [[f32; 4]; 4],
+    view_position: Vector4<f32>,
+    view_projection: Matrix4<f32>,
 }
 
 impl CameraUniform {
@@ -25,7 +26,7 @@ impl CameraUniform {
 impl Default for CameraUniform {
     fn default() -> Self {
         Self {
-            view_position: [0.0; 4],
+            view_position: vec4!(0.0, 0.0, 0.0, 0.0),
             view_projection: Matrix4::identity().into(),
         }
     }

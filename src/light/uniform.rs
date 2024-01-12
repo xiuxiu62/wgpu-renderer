@@ -1,25 +1,23 @@
-use std::{mem, num::NonZeroU64};
-
 use bytemuck::{Pod, Zeroable};
 use cgmath::{Deg, Quaternion, Rotation3, Vector3};
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
-    BindGroupLayoutEntry, BindingType, Buffer, BufferAddress, BufferBindingType, BufferUsages,
-    Device, Queue, ShaderStages,
+    BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferUsages, Device, Queue,
+    ShaderStages,
 };
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct LightUniform {
-    position: [f32; 3],
+    position: Vector3<f32>,
     _padding_1: u32,
-    color: [f32; 3],
+    color: Vector3<f32>,
     _padding_2: u32,
 }
 
 impl LightUniform {
-    pub fn new(position: [f32; 3], color: [f32; 3]) -> Self {
+    pub fn new(position: Vector3<f32>, color: Vector3<f32>) -> Self {
         Self {
             position,
             _padding_1: 0,
@@ -91,6 +89,7 @@ impl LightBundle {
 #[cfg(test)]
 mod test {
     use super::LightUniform;
+    use crate::vec3;
     use std::ptr;
 
     #[test]
@@ -99,7 +98,7 @@ mod test {
         println!("Size of [LightUniform] {size} bytes");
         assert_eq!(size, 32);
 
-        let uniform = LightUniform::new([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]);
+        let uniform = LightUniform::new(vec3!(1.0, 2.0, 3.0), vec3!(4.0, 5.0, 6.0));
         let position_ptr = ptr::addr_of!(uniform.position).cast::<u8>();
         let color_ptr = ptr::addr_of!(uniform.color).cast::<u8>();
         assert_eq!(unsafe { color_ptr.offset_from(position_ptr) }, 16);
