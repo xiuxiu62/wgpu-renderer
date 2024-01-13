@@ -34,6 +34,7 @@ mod camera;
 mod light;
 mod model;
 mod pipeline;
+mod terrain;
 mod texture;
 
 #[inline]
