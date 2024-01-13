@@ -32,7 +32,6 @@ use winit::{
 
 mod camera;
 mod light;
-// mod math;
 mod model;
 mod pipeline;
 mod texture;
