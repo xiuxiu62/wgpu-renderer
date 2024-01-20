@@ -2,7 +2,6 @@ use bytemuck::{Pod, Zeroable};
 use camera::{Camera, CameraController, CameraUniform, Projection};
 use cgmath::{Deg, InnerSpace, Matrix3, Matrix4, Quaternion, Rotation3, Vector2, Vector3, Zero};
 use light::{DrawLight, LightBundle, LightUniform};
-// use math::vec::{Vec2, Vec3};
 use model::{DrawModel, Model, ModelVertex, VertexBufferFormat};
 use std::{
     iter,
@@ -23,7 +22,7 @@ use wgpu::{
     VertexBufferLayout, VertexStepMode,
 };
 use winit::{
-    dpi::PhysicalSize,
+    dpi::{PhysicalPosition, PhysicalSize, Position},
     event::{DeviceEvent, ElementState, Event, KeyEvent, MouseButton, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
@@ -41,7 +40,7 @@ mod texture;
 fn supported_backends() -> &'static Backends {
     static BACKENDS: OnceLock<Backends> = OnceLock::new();
 
-    BACKENDS.get_or_init(|| Backends::VULKAN | Backends::DX12 | Backends::METAL)
+    BACKENDS.get_or_init(|| Backends::VULKAN | Backends::DX12 | Backends::DX11 | Backends::METAL)
 }
 
 // const INSTANCES_PER_ROW: u32 = 1;
@@ -63,6 +62,18 @@ async fn main() {
     let target_frame_rate = 120;
     let frame_time = Duration::from_millis(1000) / target_frame_rate as u32;
 
+    graphics_state.window.set_cursor_visible(true);
+    graphics_state
+        .window
+        .set_cursor_icon(winit::window::CursorIcon::Crosshair);
+
+    // if let Err(error) = graphics_state
+    //     .window
+    //     .set_cursor_grab(winit::window::CursorGrabMode::Locked)
+    // {
+    //     eprintln!("{error:?}");
+    // }
+
     graphics_state.text_manager.update("ahoy sailor");
 
     event_loop
@@ -74,8 +85,21 @@ async fn main() {
                 Event::DeviceEvent {
                     event: DeviceEvent::MouseMotion { delta: (dx, dy) },
                     ..
-                } if graphics_state.mouse_pressed => {
-                    graphics_state.camera_controller.handle_mouse(dx, dy);
+                } => {
+                    if let Err(error) =
+                        graphics_state
+                            .window
+                            .set_cursor_position(PhysicalPosition::new(
+                                graphics_state.size.width / 2,
+                                graphics_state.size.height / 2,
+                            ))
+                    {
+                        eprintln!("{error:?}");
+                    }
+
+                    if graphics_state.mouse_pressed {
+                        graphics_state.camera_controller.handle_mouse(dx, dy);
+                    }
                 }
                 Event::WindowEvent {
                     ref event,

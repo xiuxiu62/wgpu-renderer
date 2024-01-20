@@ -65,8 +65,9 @@ struct TerrainVertex {
     uv: Vector2<f32>,
 }
 
-impl VertexBufferFormat<3> for TerrainVertex {
-    const ATTRIBUTES: [VertexAttribute; 3] = vertex_attr_array![
+impl VertexBufferFormat for TerrainVertex {
+    type Attributes = [VertexAttribute; 3];
+    const ATTRIBUTES: Self::Attributes = vertex_attr_array![
         0 => Float32x3,
         1 => Float32x3,
         2 => Float32x3,
